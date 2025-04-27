@@ -13,7 +13,7 @@ stop_words = set(stopwords.words('english'))
 
 def clean_text(text):
     text = str(text).lower()
-    text = re.sub(r'[^a-z\s]', '',text) #removes numbers and punctuations
+    text = re.sub(r'[^a-zA-Z0-9.%/\-\s]', '', text) #removes numbers and punctuations
     tokens = text.split()
     tokens = [word for word in tokens if word not in stop_words]
     return " ".join(tokens)
