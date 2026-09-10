@@ -57,3 +57,13 @@ src/__pycache__/
 
 # Ignore system files (optional)
 .DS_Store
+
+# --- model weights: too large for GitHub (100MB hard limit) ---
+*.safetensors
+*.pt
+*.pth
+*.bin
+ckpts/**
+!ckpts/**/
+!ckpts/**/trainer_state.json
+!ckpts/**/config.json
