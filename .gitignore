@@ -48,8 +48,11 @@ events.out.tfevents.*
 # Ignore models
 models/
 
-# Ignore results (trained models, checkpoints)
-results/
+# Ignore results (trained models, checkpoints) but keep metric artifacts
+results/**
+!results/svm_metrics.json
+!results/svm_classification_report.txt
+!results/svm_confusion_matrix.csv
 
 # Ignore python cache
 __pycache__/

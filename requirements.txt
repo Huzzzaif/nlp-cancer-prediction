@@ -48,3 +48,12 @@ tzdata==2025.2
 urllib3==2.4.0
 xxhash==3.5.0
 yarl==1.19.0
+
+# --- added: imported by the pipelines but previously unlisted ---
+matplotlib
+seaborn
+imbalanced-learn
+# BioBERT preprocessing only (src/preprocessing/BioBert_Preprocessing.py).
+# The en_core_sci_sm model is NOT on PyPI - see README for its install URL.
+spacy
+scispacy

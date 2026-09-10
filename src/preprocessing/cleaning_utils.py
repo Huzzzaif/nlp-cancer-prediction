@@ -7,13 +7,24 @@
 import re
 import nltk
 from nltk.corpus import stopwords
-import spacy
 
-nltk.download('stopwords')
+try:
+    stopwords.words('english')
+except LookupError:
+    nltk.download('stopwords')
 general_stopwords = set(stopwords.words('english'))
 
-# Load small SciSpaCy model (only once)
-nlp = spacy.load("en_core_sci_sm")
+# SciSpaCy is only needed for lemmatize_text(), which the SVM/BioBERT
+# pipelines do not call. Load it lazily so the baseline runs without it.
+_nlp = None
+
+
+def _get_nlp():
+    global _nlp
+    if _nlp is None:
+        import spacy
+        _nlp = spacy.load("en_core_sci_sm")
+    return _nlp
 
 #certain symbols mean somehting so retain it " - , / , % , .  : ; ( )"
 # Retain important medical terms
@@ -36,7 +47,7 @@ def clean_text(text):
     return " ".join(tokens)
 
 def lemmatize_text(text):
-    doc = nlp(text)
+    doc = _get_nlp()(text)
     return " ".join([token.lemma_ for token in doc])
 
 def main():

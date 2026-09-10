@@ -1,148 +1,132 @@
-# --- Imports (organized cleanly) ---
-import sys
-import pandas as pd
-import random
-import numpy as np
-import matplotlib.pyplot as plt
-import seaborn as sns
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.preprocessing import LabelEncoder
-from sklearn.model_selection import train_test_split
-from sklearn.svm import LinearSVC, SVC
-from sklearn.metrics import classification_report, confusion_matrix, precision_recall_fscore_support
-from joblib import dump
-from imblearn.over_sampling import SMOTE
-from scipy.sparse import hstack
+"""TF-IDF + Linear SVM baseline for cancer-type classification.
 
-from src.preprocessing.cleaning_utils import clean_text
-from src.analysis.check_leak import apply_clinical_masking
-from src.features.feature_extraction import (
-    extract_tfidf_word_ngrams,
-    extract_tfidf_char_ngrams
-)
+Evaluation protocol
+-------------------
+The train/test split happens on RAW TEXT, before any vectorizer is fit.
+Vectorizers and SMOTE are fit on the training split only; the test split is
+transformed with the already-fitted vectorizers and is never resampled.
+"""
+
+import json
+import os
 from collections import Counter
-import transformers  # Just checking version
 
-# --- Step 1: Load and Merge Data ---
+import numpy as np
+import pandas as pd
+from imblearn.over_sampling import SMOTE
+from joblib import dump
+from sklearn.metrics import classification_report, confusion_matrix
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import LabelEncoder
+from sklearn.svm import LinearSVC
+
+from src.analysis.check_leak import apply_clinical_masking
+from src.features.feature_extraction import fit_transform_train_test
+from src.preprocessing.cleaning_utils import clean_text
+
+RANDOM_STATE = 42
+TEST_SIZE = 0.2
+MAX_FEATURES = 4000
+
+os.makedirs("models", exist_ok=True)
+os.makedirs("results", exist_ok=True)
+
+# --- Step 1: Load and merge ---
 reports_df = pd.read_csv("data/TCGA_Reports.csv")
 labels_df = pd.read_csv("data/tcga_patient_to_cancer_type.csv")
 
 reports_df['patient_id'] = reports_df['patient_filename'].apply(lambda x: x.split('.')[0])
 merged_df = pd.merge(reports_df, labels_df, on='patient_id', how='inner')
+print(f"Merged reports: {len(merged_df)}")
 
-# --- Step 2: Clean and Preprocess Text ---
+# --- Step 2: Clean ---
 merged_df["clean_text"] = merged_df["text"].apply(clean_text)
 
-# --- Step 3: Encode Labels ---
+# --- Step 3: Encode labels ---
 label_encoder = LabelEncoder()
 merged_df["label"] = label_encoder.fit_transform(merged_df["cancer_type"])
+print(f"Classes: {len(label_encoder.classes_)}")
 
-# --- Step 4: Apply Clinical Masking ---
+# --- Step 4: Clinical masking ---
 merged_df = apply_clinical_masking(merged_df, text_column="clean_text")
 
-# --- Step 4.5: Random Checks for Cleaning and Masking ---
-print("\n🔍 Random Sample Checks for Masking:")
-for _ in range(3):
-    random_idx = random.randint(0, len(merged_df) - 1)
-    print(f"\nSample Index: {random_idx}")
-    print("\nOriginal Text (Truncated):")
-    print(merged_df.loc[random_idx, "text"][:800])
-    print("\nCleaned and Masked Text (Truncated):")
-    print(merged_df.loc[random_idx, "clean_text"][:800])
-    mask_count = merged_df.loc[random_idx, "clean_text"].count("[CLINICAL_MASK]")
-    print(f"\nNumber of [CLINICAL_MASK] tokens: {mask_count}")
-print("\nRandom check done. Proceeding to feature extraction...\n")
-
-# --- Step 5: Feature Extraction ---
-
-# 5.1 TF-IDF word features
-word_tfidf, word_vectorizer = extract_tfidf_word_ngrams(merged_df['clean_text'], max_features=4000)
-
-# 5.2 TF-IDF char features
-char_tfidf, char_vectorizer = extract_tfidf_char_ngrams(merged_df['clean_text'], max_features=4000)
-
-# 5.4 Combine all features
-from scipy.sparse import csr_matrix
-X = hstack([word_tfidf, char_tfidf])
-y = merged_df["label"]
-
-print("Final feature matrix shape:", X.shape)
-print("Number of classes:", len(label_encoder.classes_))
-
-# --- Step 6: Train-Test Split ---
-X_train, X_test, y_train, y_test = train_test_split(
-    X, y, test_size=0.2, random_state=42, stratify=y
+# --- Step 5: Split FIRST, on raw text (prevents TF-IDF leakage) ---
+train_text, test_text, y_train, y_test = train_test_split(
+    merged_df["clean_text"],
+    merged_df["label"],
+    test_size=TEST_SIZE,
+    random_state=RANDOM_STATE,
+    stratify=merged_df["label"],
 )
+print(f"Train: {len(train_text)}  Test: {len(test_text)}")
 
-# --- Step 6.5: Apply SMOTE ---
-print("\nClass distribution BEFORE SMOTE:", Counter(y_train))
-smote = SMOTE(random_state=42)
+# --- Step 6: Fit vectorizers on TRAIN ONLY, transform both ---
+X_train, X_test, word_vectorizer, char_vectorizer = fit_transform_train_test(
+    train_text, test_text, max_features=MAX_FEATURES
+)
+print(f"Feature matrix: train {X_train.shape}, test {X_test.shape}")
+
+# --- Step 7: SMOTE on TRAIN ONLY ---
+print("Class distribution BEFORE SMOTE:", dict(sorted(Counter(y_train).items())))
+smote = SMOTE(random_state=RANDOM_STATE)
 X_train_resampled, y_train_resampled = smote.fit_resample(X_train, y_train)
-print("\nClass distribution AFTER SMOTE:", Counter(y_train_resampled))
+print("Class distribution AFTER SMOTE:", dict(sorted(Counter(y_train_resampled).items())))
 
-# --- Step 7: Train SVM Model ---
+# --- Step 8: Train ---
 svm_model = LinearSVC(class_weight='balanced')
 svm_model.fit(X_train_resampled, y_train_resampled)
 
-# --- Step 8: Evaluate Model ---
+# --- Step 9: Evaluate on untouched test split ---
 y_pred = svm_model.predict(X_test)
-print(classification_report(y_test, y_pred, target_names=label_encoder.classes_))
+report_txt = classification_report(
+    y_test, y_pred, target_names=label_encoder.classes_, digits=4
+)
+print("\n=== Classification report (held-out test set) ===")
+print(report_txt)
 
-# --- Step 9: Save Model and Vectorizer ---
+report_dict = classification_report(
+    y_test, y_pred, target_names=label_encoder.classes_, output_dict=True
+)
+metrics = {
+    "model": "TF-IDF (word 1-2gram + char 3-5gram) + LinearSVC",
+    "n_reports": int(len(merged_df)),
+    "n_classes": int(len(label_encoder.classes_)),
+    "n_train": int(len(train_text)),
+    "n_test": int(len(test_text)),
+    "test_size": TEST_SIZE,
+    "random_state": RANDOM_STATE,
+    "max_features_per_analyzer": MAX_FEATURES,
+    "smote": "training split only",
+    "vectorizers_fit_on": "training split only",
+    "accuracy": report_dict["accuracy"],
+    "macro_f1": report_dict["macro avg"]["f1-score"],
+    "weighted_f1": report_dict["weighted avg"]["f1-score"],
+    "macro_precision": report_dict["macro avg"]["precision"],
+    "macro_recall": report_dict["macro avg"]["recall"],
+    "per_class": {
+        c: report_dict[c] for c in label_encoder.classes_ if c in report_dict
+    },
+}
+with open("results/svm_metrics.json", "w") as f:
+    json.dump(metrics, f, indent=2)
+
+with open("results/svm_classification_report.txt", "w") as f:
+    f.write(report_txt)
+
+np.savetxt(
+    "results/svm_confusion_matrix.csv",
+    confusion_matrix(y_test, y_pred),
+    delimiter=",",
+    fmt="%d",
+)
+
+print(f"accuracy    {metrics['accuracy']:.4f}")
+print(f"macro F1    {metrics['macro_f1']:.4f}")
+print(f"weighted F1 {metrics['weighted_f1']:.4f}")
+
+# --- Step 10: Persist ---
 dump(svm_model, "models/svm_model.joblib")
 dump(word_vectorizer, "models/word_vectorizer.joblib")
 dump(char_vectorizer, "models/char_vectorizer.joblib")
 dump(label_encoder, "models/label_encoder.joblib")
-print("\nModel, vectorizer, and label encoder saved successfully.")
-
-# --- Step 10: Visualization Functions ---
-
-def plot_confusion_matrix(y_true, y_pred, class_names, normalize=False):
-    cm = confusion_matrix(y_true, y_pred, normalize='true' if normalize else None)
-    plt.figure(figsize=(14, 12))
-    sns.heatmap(cm, annot=True, fmt='.2f' if normalize else 'd', cmap='Blues',
-                xticklabels=class_names, yticklabels=class_names)
-    plt.xlabel('Predicted Label')
-    plt.ylabel('True Label')
-    plt.title('Confusion Matrix' + (' (Normalized)' if normalize else ''))
-    plt.xticks(rotation=45, ha='right')
-    plt.yticks(rotation=0)
-    plt.tight_layout()
-    plt.show()
-
-def plot_per_class_metrics(y_true, y_pred, class_names):
-    precision, recall, f1, _ = precision_recall_fscore_support(
-        y_true, y_pred, labels=np.arange(len(class_names))
-    )
-    metrics_df = pd.DataFrame({
-        'Class': class_names,
-        'Precision': precision,
-        'Recall': recall,
-        'F1-Score': f1
-    })
-
-    metrics_df = metrics_df.sort_values('F1-Score', ascending=False)
-
-    metrics_df.plot(
-        x='Class',
-        y=['Precision', 'Recall', 'F1-Score'],
-        kind='bar',
-        figsize=(16, 8)
-    )
-    plt.title('Per-Class Precision, Recall, F1-Score')
-    plt.ylabel('Score')
-    plt.ylim(0, 1)
-    plt.xticks(rotation=45, ha='right')
-    plt.grid(axis='y')
-    plt.tight_layout()
-    plt.show()
-
-# --- Step 11: Run Visualizations ---
-print("\nPlotting Confusion Matrix...")
-plot_confusion_matrix(y_test, y_pred, class_names=label_encoder.classes_, normalize=True)
-
-print("\nPlotting Per-Class Metrics...")
-plot_per_class_metrics(y_test, y_pred, class_names=label_encoder.classes_)
-
-# --- Step 12: Info ---
-print("\nTransformers version in use:", transformers.__version__)
+print("\nSaved model, vectorizers, label encoder, and results/svm_metrics.json")
