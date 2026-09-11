@@ -2,7 +2,9 @@
 
 Classifies **32 cancer types** from free-text TCGA pathology reports. Two models
 are implemented: a TF-IDF + Linear SVM baseline and a fine-tuned BioBERT
-classifier.
+classifier for contextual clinical-text representations. Headline metrics below
+belong to TF-IDF/Linear SVM; BioBERT has not yet been evaluated on an independent
+held-out test split.
 
 ---
 
@@ -14,7 +16,7 @@ split → 7,618 train / 1,905 test, `random_state=42`).
 | Model | Accuracy | Macro F1 | Weighted F1 | Evaluation |
 |---|---|---|---|---|
 | TF-IDF (word 1-2gram + char 3-5gram) + LinearSVC | **0.9454** | **0.9428** | **0.9452** | Clean held-out test set |
-| BioBERT (`dmis-lab/biobert-base-cased-v1.1`), 3 epochs | 0.9249 | 0.9058 | — | ⚠️ see caveat below |
+| BioBERT (`dmis-lab/biobert-base-cased-v1.1`), 3 epochs | 0.9249 | 0.9058 | — | Validation / checkpoint-selection split; see caveat below |
 
 SVM results are reproducible by running `SVM_main.py`; full output is committed
 to [`results/svm_metrics.json`](results/svm_metrics.json) and
@@ -44,7 +46,7 @@ rerun, treat the SVM number as the defensible result.
 *metastatic*).
 
 **Clinical term masking** — pathology reports name the diagnosis directly, so a
-naive model just memorizes site vocabulary. A hand-built dictionary
+naive model just memorizes site vocabulary. A hand-built dictionary of **64 distinct terms**
 ([`data/clinical_masking_dict.json`](data/clinical_masking_dict.json)) replaces
 site- and diagnosis-specific terms (*mastectomy*, *glioblastoma*,
 *prostatectomy*, …) with `[CLINICAL_MASK]` before vectorization. This reduces
@@ -55,9 +57,9 @@ character-level TF-IDF (3–5 grams, 4,000 features) to capture both terminology
 and spelling variation in dictated reports.
 
 **Class imbalance** — classes range from 1,034 reports (BRCA) to 43 (CHOL).
-SMOTE is applied to the training split only.
+For the SVM baseline, SMOTE is applied to the training split only.
 
-### Evaluation protocol
+### SVM evaluation protocol
 
 The train/test split happens on **raw text, before any vectorizer is fit**.
 Vectorizers and SMOTE are fit on the training split only; the test split is
@@ -114,10 +116,13 @@ PyPI:
 
 ```bash
 pip install https://s3-us-west-2.amazonaws.com/ai2-s2-scispacy/releases/v0.5.4/en_core_sci_sm-0.5.4.tar.gz
-python BioBert_main.py
 ```
 
 ---
+
+Before rerunning `BioBert_main.py`, move oversampling after the training split
+and introduce a separate validation split for checkpoint selection. The current
+script is experimental and should not be used to claim an independent test score.
 
 ## Data
 
